@@ -6,7 +6,7 @@ $$
 f(c, t) = z^2+c = f(c, t-1)^2+c
 $$
 
-where $t\in \mathbb{N}_0$ and $c \in \mathbb{C}$  with the initial condition $f(c, 0) = 0 + 0j$. To train the neural network time is treated as a continuous variable $t\in \R$, further we can leverage the known partial derivaties
+where $t\in \mathbb{N}_0$ and $c \in \mathbb{C}$  with the initial condition $f(c, 0) = 0 + 0j$. To train the neural network time is treated as a continuous variable $t\in \mathbb{R}$, further we can leverage the known partial derivaties
 
 $$
 \frac{\partial}{\partial t}f(c, t) = 2 \cdot f(c, t-1) \cdot \frac{\partial}{\partial t}f(c, t-1)
