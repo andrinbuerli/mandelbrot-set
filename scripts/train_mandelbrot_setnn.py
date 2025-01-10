@@ -47,32 +47,41 @@ def logscalemagnitude(z):
 
 # Mandelbrot Dataset
 class MandelbrotDataset(Dataset):
-    def __init__(self, samples=1000, max_iter=20, fix_c=False):
+    def __init__(self, samples=1000, max_iter=20, max_magnitude=1e2, fix_c=False):
         self.samples = samples
         self.max_iter = max_iter
+        self.max_mag = max_magnitude
         if fix_c:
             self.c = torch.complex(torch.rand(samples) * 3 - 2, torch.rand(samples) * 3 - 1.5)  # Complex c in [-2, 1] + [-1.5, 1.5]i
         else:
             self.c = None
 
     def generate_data(self, idx):
-        if self.c is None:
-            c = torch.complex(torch.rand(1) * 3 - 2, torch.rand(1) * 3 - 1.5)  # Complex c in [-2, 1] + [-1.5, 1.5]i
-        else:
-            c = self.c[[idx]]
-        #c = torch.tensor(-1.1 + 0.2j, dtype=torch.complex64).reshape(c.shape)
-        z = torch.tensor(0 + 0j, dtype=torch.complex64)
-        z_to_return = []
-        t_to_return = []
-        for t in range(1, self.max_iter + 1):
-            z = z**2 + c
+        while True:
+            if self.c is None:
+                c = torch.complex(torch.rand(1) * 3 - 2, torch.rand(1) * 3 - 1.5)  # Complex c in [-2, 1] + [-1.5, 1.5]i
+            else:
+                c = self.c[[idx]]
+            #c = torch.tensor(-1.1 + 0.2j, dtype=torch.complex64).reshape(c.shape)
+            z = torch.tensor(0 + 0j, dtype=torch.complex64)
+            z_to_return = []
+            t_to_return = []
+            for t in range(1, self.max_iter + 1):
+                z = z**2 + c
+                
+                if torch.isnan(z.real) or torch.isnan(z.imag) or torch.abs(z) > self.max_mag:
+                    break
+                
+                z_to_return.append(z[0])
+                t_to_return.append(t)
+                
+            # Randomly break the loop with probability t / max_iter, such that we have some incomplete sequences
+            # this will favour C values that are either within the Mandelbrot set or at the boundary
+            t_prob = t / self.max_iter
             
-            if torch.isnan(z.real) or torch.isnan(z.imag) or torch.abs(z) > 2:
+            repeat_prop = np.random.rand()
+            if repeat_prop < t_prob:
                 break
-            
-            z_to_return.append(z[0])
-            t_to_return.append(t)
-            
             
         if len(z_to_return) < (self.max_iter):
             z_to_return += [torch.tensor(torch.nan + torch.nan * 1j, dtype=torch.complex64)] * (self.max_iter - len(z_to_return))
@@ -87,6 +96,7 @@ class MandelbrotDataset(Dataset):
 
     def __getitem__(self, idx):
         t, c, z = self.generate_data(idx)
+        
         return t, c, z
 
 # Neural Network Model
@@ -101,6 +111,7 @@ class MandelbrotNN(pl.LightningModule):
         total_epochs=50, 
         pde_weight=1.0,
         output_dir="predictions/",
+        max_batch_size=64,
     ):
         super().__init__()
         self.lr = lr
@@ -108,12 +119,13 @@ class MandelbrotNN(pl.LightningModule):
         self.warmup_epochs = warmup_epochs
         self.total_epochs = total_epochs
         self.max_iter = max_iter
+        self.max_batch_size = max_batch_size
         self.output_dir = output_dir
         self.model = nn.Sequential(
             nn.Linear(3, hidden_dim),
-            nn.ReLU(),
+            nn.GELU(),
             *[nn.Sequential(
-                nn.Linear(hidden_dim, hidden_dim), nn.ReLU()) 
+                nn.Linear(hidden_dim, hidden_dim), nn.GELU()) 
                 #nn.Linear(hidden_dim, hidden_dim), nn.LayerNorm(hidden_dim), nn.ReLU()) 
                 for _ in range(num_hidden_layers)
             ],
@@ -131,41 +143,31 @@ class MandelbrotNN(pl.LightningModule):
         # Time derivative: d/dt
         t.requires_grad_(True)
         z_pred_t = self.forward(t, c)
-        t_shifted = t - 1  # Shift time backward by 1
-        z_pred_shifted = self.forward(t_shifted, c)
+        z_pred_t_complex = torch.view_as_complex(z_pred_t.contiguous())
+        tminus1 = t - 1  # Shift time backward by 1
+        z_pred_tminus1 = self.forward(tminus1, c)
+        z_pred_tminus1_complex = torch.view_as_complex(z_pred_tminus1.contiguous())
         
         # Compute dz/dt
-        dz_dt = grad(z_pred_t, t, torch.ones_like(z_pred_t), retain_graph=True, create_graph=True, allow_unused=True)[0]
-        dz_shifted_dt = grad(z_pred_shifted, t_shifted, torch.ones_like(z_pred_shifted), retain_graph=True, create_graph=True, allow_unused=True)[0]
-
-        # Convert z_pred and c to complex tensors
-        z_pred_complex = torch.view_as_complex(z_pred_shifted)
+        dz_dt = grad(z_pred_t_complex, t, torch.ones_like(z_pred_t_complex), retain_graph=True, create_graph=True, allow_unused=True)[0]
+        dz_dtminus1 = grad(z_pred_tminus1_complex, tminus1, torch.ones_like(z_pred_tminus1_complex), retain_graph=True, create_graph=True, allow_unused=True)[0]
 
         # Residual for time derivative in the complex domain
-        residual_t = dz_dt.squeeze() - 2 * z_pred_complex * dz_shifted_dt.squeeze()
+        residual_t_complex = dz_dt.squeeze() - 2 * z_pred_tminus1_complex * dz_dtminus1.squeeze()
         
         # Gradients with respect to c (real and imaginary parts separately)
-        dz_dc_t = grad(z_pred_t, c, torch.ones_like(z_pred_t), retain_graph=True, create_graph=True, allow_unused=True)[0]
-        dz_dc_real_t = dz_dc_t[..., 0]
-        dz_dc_imag_t = dz_dc_t[..., 1]
-
-        dz_dc_t_minus_1 = grad(z_pred_shifted, c, torch.ones_like(z_pred_shifted), retain_graph=True, create_graph=True, allow_unused=True)[0]
-        dz_dc_real_t_minus_1 = dz_dc_t_minus_1[..., 0]
-        dz_dc_imag_t_minus_1 = dz_dc_t_minus_1[..., 1]
-
-        if dz_dc_real_t is None or dz_dc_imag_t is None or dz_dc_real_t_minus_1 is None or dz_dc_imag_t_minus_1 is None:
-            raise RuntimeError("Gradient computation for dz/dc failed. Ensure c is used in the graph.")
-
-        # Combine real and imaginary gradients for the residual
-        dz_dc_t = torch.complex(dz_dc_real_t, dz_dc_imag_t)
-        dz_dc_t_minus_1 = torch.complex(dz_dc_real_t_minus_1, dz_dc_imag_t_minus_1)
+        dz_dc_t = grad(z_pred_t_complex, c, torch.ones_like(z_pred_t_complex), retain_graph=True, create_graph=True, allow_unused=True)[0]
+        dz_dc_t_complex = torch.view_as_complex(dz_dc_t.contiguous())
+        
+        dz_dc_tminus1 = grad(z_pred_tminus1_complex, c, torch.ones_like(z_pred_tminus1_complex), retain_graph=True, create_graph=True, allow_unused=True)[0]
+        dz_dc_tminus1_complex = torch.view_as_complex(dz_dc_tminus1.contiguous())
 
         # Compute residual for d/dc
-        residual_c = dz_dc_t - (2 * z_pred_complex * dz_dc_t_minus_1 + 1)
+        residual_c_complex = dz_dc_t_complex - (2 * z_pred_tminus1_complex * dz_dc_tminus1_complex + 1)
 
         # Compute the final loss
-        mean_residual_t = torch.mean(residual_t.abs())
-        mean_residual_c = torch.mean(residual_c.abs())
+        mean_residual_t = torch.mean(residual_t_complex.abs())
+        mean_residual_c = torch.mean(residual_c_complex.abs())
         
         return mean_residual_t, mean_residual_c
     
@@ -173,27 +175,38 @@ class MandelbrotNN(pl.LightningModule):
         """
         Calculate the R² score.
         """
-        ss_res = torch.sum((torch.view_as_complex(z_true) - torch.view_as_complex(z_pred)) ** 2)
-        ss_tot = torch.sum((torch.view_as_complex(z_true) - torch.mean(torch.view_as_complex(z_true))) ** 2)
-        r2 = 1 - ss_res.abs() / ss_tot.abs()
+        ss_res = torch.sum((torch.view_as_complex(z_true) - torch.view_as_complex(z_pred)).abs() ** 2)
+        ss_tot = torch.sum((torch.view_as_complex(z_true) - torch.mean(torch.view_as_complex(z_true))).abs() ** 2)
+        r2 = 1 - ss_res / ss_tot
         return r2.item()  # Convert to Python float for logging
-
 
     def training_step(self, batch, batch_idx):
         t, c, z_true = batch
-        z_pred = self.forward(t, c)
+        
+        t = t.view(-1, 1)
+        c = c.view(-1, 2)
+        z_true = z_true.view(-1, 2)
         
         nan_mask = torch.isnan(z_true).any(-1)
-        z_true_imputed = self._get_imputed_z_true(z_true, nan_mask.unsqueeze(-1))
-
-        data_loss = nn.MSELoss()(z_pred, z_true_imputed)
+        t = t[~nan_mask]
+        c = c[~nan_mask]
+        z_true = z_true[~nan_mask]
         
-        r2_unescaped = self.r2_score_complex(z_true_imputed[~nan_mask], z_pred[~nan_mask])
-        r2_imputed = self.r2_score_complex(z_true_imputed, z_pred)
-        r2_escaped = self.r2_score_complex(z_true_imputed[nan_mask], z_pred[nan_mask])
+        if z_true.shape[0] > self.max_batch_size:
+            # Randomly sample a subset of the batch
+            idx = torch.randperm(z_true.shape[0])[:self.max_batch_size]
+            t = t[idx]
+            c = c[idx]
+            z_true = z_true[idx]
+        
+        z_pred = self.forward(t, c)
+        
+        data_loss = self.data_loss(z_true, z_pred)
+        
+        r2 = self.r2_score_complex(z_true=z_true, z_pred=z_pred)
         
         # only compute PDE loss on not escaped points
-        residual_t, residual_c = self.pde_loss(t[~nan_mask], c[~nan_mask])
+        residual_t, residual_c = self.pde_loss(t, c)
         pde_loss = residual_t + residual_c
         loss = data_loss + self.pde_weight * pde_loss
 
@@ -202,25 +215,40 @@ class MandelbrotNN(pl.LightningModule):
         self.log("train/pde_loss", pde_loss, on_epoch=True)
         self.log("train/residual_t", residual_t, on_epoch=True)
         self.log("train/residual_c", residual_c, on_epoch=True)
-        self.log("train/r2_unescaped", r2_unescaped, on_epoch=True, prog_bar=True)
-        self.log("train/r2_imputed", r2_imputed, on_epoch=True, prog_bar=True)
-        self.log("train/r2_escaped", r2_escaped, on_epoch=True, prog_bar=True)
+        self.log("train/r2", r2, on_epoch=True, prog_bar=True)
         return loss
+
+    def data_loss(self, z_true, z_pred):
+        data_loss = (torch.view_as_complex(z_true) - torch.view_as_complex(z_pred)).abs().mean()
+        return data_loss
 
     def validation_step(self, batch, batch_idx):
         t, c, z_true = batch
+        
+        t = t.view(-1, 1)
+        c = c.view(-1, 2)
+        z_true = z_true.view(-1, 2)
+        
         nan_mask = torch.isnan(z_true).any(-1)
-        z_true_imputed = self._get_imputed_z_true(z_true, nan_mask.unsqueeze(-1))
+        t = t[~nan_mask]
+        c = c[~nan_mask]
+        z_true = z_true[~nan_mask]
+        
+        if z_true.shape[0] > self.max_batch_size:
+            # Randomly sample a subset of the batch
+            idx = torch.randperm(z_true.shape[0])[:self.max_batch_size]
+            t = t[idx]
+            c = c[idx]
+            z_true = z_true[idx]
+        
         with torch.enable_grad():
             z_pred = self.forward(t, c)
-            residual_t, residual_c = self.pde_loss(t[~nan_mask], c[~nan_mask])
+            residual_t, residual_c = self.pde_loss(t, c)
         
         pde_loss = residual_t + residual_c
-        data_loss = nn.MSELoss()(z_pred, z_true_imputed)
+        data_loss = self.data_loss(z_true, z_pred)
         
-        r2_unescaped = self.r2_score_complex(z_true_imputed[~nan_mask], z_pred[~nan_mask])
-        r2_imputed = self.r2_score_complex(z_true_imputed, z_pred)
-        r2_escaped = self.r2_score_complex(z_true_imputed[nan_mask], z_pred[nan_mask])
+        r2 = self.r2_score_complex(z_true=z_true, z_pred=z_pred)
         
         loss = data_loss + self.pde_weight * pde_loss
         self.log("val/loss", loss, on_epoch=True, prog_bar=True)
@@ -228,9 +256,7 @@ class MandelbrotNN(pl.LightningModule):
         self.log("val/pde_loss", pde_loss, on_epoch=True, prog_bar=True)
         self.log("val/residual_t", residual_t, on_epoch=True, prog_bar=True)
         self.log("val/residual_c", residual_c, on_epoch=True, prog_bar=True)
-        self.log("val/r2_unescaped", r2_unescaped, on_epoch=True, prog_bar=True)
-        self.log("val/r2_imputed", r2_imputed, on_epoch=True, prog_bar=True)
-        self.log("val/r2_escaped", r2_escaped, on_epoch=True, prog_bar=True)
+        self.log("val/r2", r2, on_epoch=True, prog_bar=True)
 
         if batch_idx == 0:  # Plot predictions vs real on first batch
             self.plot_predictions(c, self.max_iter//2, save_dir=f"{self.output_dir}_inter/")
@@ -239,12 +265,23 @@ class MandelbrotNN(pl.LightningModule):
             self.plot_mandelbrot_set(save_path=f"{self.output_dir}_inter/mandelbrot_plot.png", iterations=self.max_iter // 2)
             self.plot_mandelbrot_set(save_path=f"{self.output_dir}/mandelbrot_plot.png", iterations=self.max_iter)
             self.plot_mandelbrot_set(save_path=f"{self.output_dir}_extrapol/mandelbrot_plot.png", iterations=self.max_iter * 2)
-
-
-    def _get_imputed_z_true(self, z_true, nan_mask):
-        escape_time = torch.argmax(nan_mask.to(int), dim=1).repeat(1, z_true.shape[1]).unsqueeze(-1)
-        z_true_imputed  = torch.where(nan_mask, torch.tensor([2.0, 2.0], dtype=torch.float32, device=z_true.device) * escape_time, z_true)
-        return z_true_imputed
+            
+            # plot zoomed at xmin, xmax, ymin, ymax = -1.0, -0.5, -0.5, 0.0
+            self.plot_mandelbrot_set(
+                save_path=f"{self.output_dir}_inter/mandelbrot_plot_zoomed.png", 
+                iterations=self.max_iter // 2,
+                real_min=-1.0, real_max=-0.5,
+                imag_min=-0.5, imag_max=0.0)
+            self.plot_mandelbrot_set(
+                save_path=f"{self.output_dir}/mandelbrot_plot_zoomed.png",
+                iterations=self.max_iter,
+                real_min=-1.0, real_max=-0.5,
+                imag_min=-0.5, imag_max=0.0)
+            self.plot_mandelbrot_set(
+                save_path=f"{self.output_dir}_extrapol/mandelbrot_plot_zoomed.png",
+                iterations=self.max_iter * 2,
+                real_min=-1.0, real_max=-0.5,
+                imag_min=-0.5, imag_max=0.0)
     
     def plot_mandelbrot_set(self, real_min=-2.0, real_max=1.0, imag_min=-1.5, imag_max=1.5, resolution=500, iterations=20, save_path='mandelbrot_plot.png'):
         device = next(self.parameters()).device
@@ -267,12 +304,12 @@ class MandelbrotNN(pl.LightningModule):
 
         # Plot the log of the magnitude to highlight differences
         plt.figure(figsize=(8, 8))
-        plt.imshow(magnitude, 
+        plt.imshow(np.where(((~np.isnan(magnitude.T)) & (magnitude.T < 2.0)), magnitude.T, 2.0), 
                 extent=[real_min, real_max, imag_min, imag_max], 
                 origin='lower', 
                 cmap='hot',)
 
-        plt.colorbar(label='Magnitude')
+        plt.colorbar(label='Clipped Magnitude')
         plt.xlabel('Real Axis')
         plt.ylabel('Imag Axis')
         plt.title(f'Mandelbrot Set Visualization at t={iterations}')
@@ -289,21 +326,21 @@ class MandelbrotNN(pl.LightningModule):
         c_batch = c_batch.unique(dim=0)[:8]
                 
         for idx, c in enumerate(c_batch):
-            c_complex = torch.view_as_complex(c)[0]
-            z_real = [0]  # Ground truth values
-            z_nn = [0]    # NN predicted values
+            c_complex = torch.view_as_complex(c)
+            z_real = [0 + 0j]  # Ground truth values
+            z_nn = [0 + 0j]    # NN predicted values
             z = torch.tensor(0 + 0j, dtype=torch.complex64)
 
             # Generate ground truth and NN predictions
-            for t in range(max_iter):
+            for t in range(1, max_iter):
                 z = z**2 + c_complex
                 
-                if torch.isnan(z.real) or torch.isnan(z.imag) or torch.abs(z) > 2:
+                if torch.isnan(z.real) or torch.isnan(z.imag) or torch.abs(z) > 1e2:
                     break
                 
                 z_real.append(logscalemagnitude(z).cpu().numpy())
                 t_tensor = torch.tensor([t], dtype=torch.float32, device=c.device).unsqueeze(0)  
-                z_pred = self(t_tensor, c[[0]])[0]
+                z_pred = self(t_tensor, c[None])[0]
                 z_nn.append(logscalemagnitude(torch.view_as_complex(z_pred)).cpu().item())
 
             # Convert to numpy arrays for plotting
@@ -316,7 +353,7 @@ class MandelbrotNN(pl.LightningModule):
             colors = [cmap(norm(tt)) for tt in range(t + 1)]
 
             # Create a new figure with two subplots
-            fig, axs = plt.subplots(1, 2, figsize=(12, 6))
+            fig, axs = plt.subplots(1, 3, figsize=(18, 6))
 
             # Subplot 1: Ground Truth with Time Gradient
             for i in range(len(z_real) - 1):
@@ -346,6 +383,21 @@ class MandelbrotNN(pl.LightningModule):
             axs[1].set_xlabel("Real")
             axs[1].set_ylabel("Imaginary")
             axs[1].grid()
+            
+            
+            for i in range(len(z_pred) - 1):
+                axs[2].scatter(
+                    [np.real(z_pred[i]), np.real(z_pred[i + 1])],
+                    [np.imag(z_pred[i]), np.imag(z_pred[i + 1])],
+                    color=colors[i],
+                    marker='o',
+                )
+                axs[2].scatter(
+                    [np.real(z_real[i]), np.real(z_real[i + 1])],
+                    [np.imag(z_real[i]), np.imag(z_real[i + 1])],
+                    color=colors[i],
+                    marker='x',
+                )
 
             # Add colorbar to the second subplot
             cbar = plt.colorbar(sm, ax=axs[1], orientation="vertical", pad=0.1)
@@ -374,20 +426,21 @@ class MandelbrotNN(pl.LightningModule):
 if __name__ == "__main__":
     import os
     #os.environ["WANDB_MODE"]="offline"
-    dataset = MandelbrotDataset(samples=200_000, max_iter=100)
-    val_dataset = MandelbrotDataset(samples=20_000, max_iter=100, fix_c=True)
+    dataset = MandelbrotDataset(samples=100_000, max_iter=20)
+    val_dataset = MandelbrotDataset(samples=10_000, max_iter=20, fix_c=True)
 
-    train_loader = DataLoader(dataset, batch_size=256, shuffle=True, num_workers=8)
-    val_loader = DataLoader(val_dataset, batch_size=256, shuffle=False, num_workers=4)
+    train_loader = DataLoader(dataset, batch_size=128, shuffle=True, num_workers=16, persistent_workers=True)
+    val_loader = DataLoader(val_dataset, batch_size=128, shuffle=False, num_workers=4, persistent_workers=True)
 
     model = MandelbrotNN(
-        hidden_dim=2048,
+        hidden_dim=1024,
         num_hidden_layers=6, 
         lr=1e-4, 
-        max_iter=100,
-        warmup_epochs=5, 
+        max_iter=20,
+        warmup_epochs=1, 
         total_epochs=1000,
         pde_weight=0.1,
+        max_batch_size=2048,
         output_dir="predictions",)
     
     # add mlflow logger
@@ -405,7 +458,7 @@ if __name__ == "__main__":
     )
     
     trainer = pl.Trainer(
-        max_epochs=100_000,
+        max_epochs=1000,
         num_nodes=1,
         logger=wandb_logger,
         callbacks=[lr_monitor, pl.callbacks.ModelSummary(max_depth=3), checkpoint_callback]
