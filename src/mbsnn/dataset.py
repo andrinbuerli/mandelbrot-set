@@ -39,7 +39,7 @@ class MandelbrotDataset(Dataset):
             t_prob = t / self.max_iter
             
             repeat_prop = np.random.rand()
-            if repeat_prop < t_prob:
+            if repeat_prop < t_prob or self.c is not None:
                 break
             
         if len(z_to_return) < (self.max_iter):

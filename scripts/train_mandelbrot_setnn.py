@@ -62,6 +62,8 @@ def hydra_training(cfg: DictConfig = None) -> None:
 
 if __name__ == "__main__":
     import os
-    #os.environ["WANDB_MODE"]="offline"
+    
+    if os.environ.get("WANDB_API_KEY") is None:
+        os.environ["WANDB_MODE"]="offline"
     
     hydra_training()

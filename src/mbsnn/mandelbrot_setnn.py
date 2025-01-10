@@ -129,6 +129,7 @@ class MandelbrotNN(pl.LightningModule):
         self.log("train/residual_t", residual_t, on_epoch=True)
         self.log("train/residual_c", residual_c, on_epoch=True)
         self.log("train/r2", r2, on_epoch=True, prog_bar=True)
+        self.log("train/batch_size", z_true.shape[0], on_epoch=True, prog_bar=False)
         return loss
 
     def data_loss(self, z_true, z_pred):
@@ -206,10 +207,10 @@ class MandelbrotNN(pl.LightningModule):
     def save_figs(figs, save_dir, file_name="prediction"):
         Path(save_dir).mkdir(parents=True, exist_ok=True)
         for ii, fig in enumerate(figs):
-                # Save the plot with a unique name
+            # Save the plot with a unique name
             fig.tight_layout()
             fn = f"{save_dir}{file_name}_{ii}.png"
-            plt.savefig(fn)
+            fig.savefig(fn)
             wandb.save(fn)
             #self.logger.log_image(key=f"{save_dir}Prediction Trajectory for $c = {c_complex.item():.2f}$", images=[fig], step=self.global_step)
             plt.close(fig)

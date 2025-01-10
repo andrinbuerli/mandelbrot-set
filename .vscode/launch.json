@@ -10,6 +10,22 @@
             "request": "launch",
             "program": "${file}",
             "console": "integratedTerminal"
+        },
+        {
+            "name": "render_checkpoint",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/scripts/render_checkpoint.py",
+            "console": "integratedTerminal",
+            "args": ["--checkpoint", "checkpoints/mandelbrot-epoch=86-val_loss=0.00.ckpt"]
+        },
+        {
+            "name": "train",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/scripts/train_mandelbrot_setnn.py",
+            "console": "integratedTerminal",
+            "args": ["--config-name", "default"]
         }
     ]
 }

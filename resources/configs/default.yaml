@@ -10,9 +10,9 @@ train:
   pde_weight: 0.1
 
 dataset:
-  max_iter: 40
-  num_train_samples: 1_000_000
-  num_val_samples: 10_000
+  max_iter: 1000
+  num_train_samples: 100_000
+  num_val_samples: 1_000
   num_train_workers: 16
-  num_val_workers: 4
-  batch_size: 256
+  num_val_workers: 16
+  batch_size: 8
