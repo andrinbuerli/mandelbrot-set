@@ -1,7 +1,11 @@
 venv/
 wandb/
+outputs/
 predictions/
 predictions_inter/
 predictions_extrapol/
 checkpoints/
+src/mandelbrot_set_nn.egg-info/
 .wandbkey
+
+**/*.pyc

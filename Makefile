@@ -1,10 +1,12 @@
 include resources/common.mk
 
+FILE := default.yaml
+
 ###########################
 # Training
 ###########################
-train: ##@Training train the model, requires .wandbkey file
-	WANDB_API_KEY=$(shell cat .wandbkey) venv/bin/python scripts/train_mandelbrot_setnn.py 
+train: ##@Training train the model, requires .wandbkey file (FILE for cfg file)
+	WANDB_API_KEY=$(shell cat .wandbkey) venv/bin/python scripts/train_mandelbrot_setnn.py --config-name $(FILE)
 
 
 ###########################
@@ -16,4 +18,4 @@ render_mandelbrot: ##@Utils render mandelbrot set (use PARAMS for cli arguments)
 
 setup_venv: ##@Utils setup virtual environment
 	python3 -m venv venv
-	venv/bin/pip install -r requirements.txt
+	venv/bin/python -m pip install -e .

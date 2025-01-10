@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mandelbrot-set-nn"
+version = "0.1"
+authors = [{ name = "Andrin Bürli", email = "andrin.burl@gmail.com" }]
+description = "Learning the function of the Mandelbrot set with a neural network"
+readme = "README.md"
+dynamic = ["dependencies"]
+
+[requires]
+python_version = "3.10"
+
+[tool.setuptools.dynamic]
+dependencies = {file = ["requirements.txt"]}
+
+[tool.pyright]
+include = ["src"]
+exclude = ["**/__pycache__",
+    "dry_run",
+    "hydra_mlruns",
+    "outputs",
+    "tmp",
+]
