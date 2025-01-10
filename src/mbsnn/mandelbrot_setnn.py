@@ -7,21 +7,10 @@ import pytorch_lightning as pl
 import os
 import matplotlib.cm as cm
 import matplotlib.colors as mcolors
-
+from pathlib import Path
 import wandb
 
-from mbsnn.utils import WarmupCosineScheduler
-
-
-def logscalemagnitude(z):
-    #return z
-    # log transform magnitude of z
-    z_mag_log = torch.log1p(torch.abs(z) + 1e-6)
-    # keep phase of z
-    z_phase = torch.angle(z)
-    # reconstruct z from log magnitude and phase
-    z = torch.polar(z_mag_log, z_phase)
-    return z
+from mbsnn.utils import WarmupCosineScheduler, logscalemagnitude
 
 # Neural Network Model
 class MandelbrotNN(pl.LightningModule):
@@ -183,31 +172,49 @@ class MandelbrotNN(pl.LightningModule):
         self.log("val/r2", r2, on_epoch=True, prog_bar=True)
 
         if batch_idx == 0:  # Plot predictions vs real on first batch
-            self.plot_predictions(c, self.max_iter//2, save_dir=f"{self.output_dir}_inter/")
-            self.plot_predictions(c, self.max_iter, save_dir=f"{self.output_dir}/")
-            self.plot_predictions(c, self.max_iter * 2, save_dir=f"{self.output_dir}_extrapol/")
-            self.plot_mandelbrot_set(save_path=f"{self.output_dir}_inter/mandelbrot_plot.png", iterations=self.max_iter // 2)
-            self.plot_mandelbrot_set(save_path=f"{self.output_dir}/mandelbrot_plot.png", iterations=self.max_iter)
-            self.plot_mandelbrot_set(save_path=f"{self.output_dir}_extrapol/mandelbrot_plot.png", iterations=self.max_iter * 2)
+            figs = self.plot_predictions(c, self.max_iter//2)
+            self.save_figs(figs, save_dir=f"{self.output_dir}_inter/")
+            
+            figs = self.plot_predictions(c, self.max_iter)
+            self.save_figs(figs, save_dir=f"{self.output_dir}/")
+            
+            figs = self.plot_predictions(c, self.max_iter * 2)
+            self.save_figs(figs, save_dir=f"{self.output_dir}_extrapol/")
+            
+            fig = self.plot_mandelbrot_set(iterations=self.max_iter // 2)
+            self.save_figs([fig], save_dir=f"{self.output_dir}_inter/", file_name="mandelbrot_plot")
+            
+            fig = self.plot_mandelbrot_set(iterations=self.max_iter)
+            self.save_figs([fig], save_dir=f"{self.output_dir}/", file_name="mandelbrot_plot")
+            
+            fig = self.plot_mandelbrot_set(iterations=self.max_iter * 2)
+            self.save_figs([fig], save_dir=f"{self.output_dir}_extrapol/", file_name="mandelbrot_plot")
             
             # plot zoomed at xmin, xmax, ymin, ymax = -1.0, -0.5, -0.5, 0.0
-            self.plot_mandelbrot_set(
-                save_path=f"{self.output_dir}_inter/mandelbrot_plot_zoomed.png", 
-                iterations=self.max_iter // 2,
-                real_min=-1.0, real_max=-0.5,
-                imag_min=-0.5, imag_max=0.0)
-            self.plot_mandelbrot_set(
-                save_path=f"{self.output_dir}/mandelbrot_plot_zoomed.png",
-                iterations=self.max_iter,
-                real_min=-1.0, real_max=-0.5,
-                imag_min=-0.5, imag_max=0.0)
-            self.plot_mandelbrot_set(
-                save_path=f"{self.output_dir}_extrapol/mandelbrot_plot_zoomed.png",
-                iterations=self.max_iter * 2,
-                real_min=-1.0, real_max=-0.5,
-                imag_min=-0.5, imag_max=0.0)
+            zoom_args = dict(real_min=-1.0, real_max=-0.5, imag_min=-0.5, imag_max=0.0)
+            
+            fig = self.plot_mandelbrot_set(iterations=self.max_iter // 2, **zoom_args)
+            self.save_figs([fig], save_dir=f"{self.output_dir}_inter/", file_name="mandelbrot_plot_zoomed")
+            
+            fig = self.plot_mandelbrot_set(iterations=self.max_iter, **zoom_args)
+            self.save_figs([fig], save_dir=f"{self.output_dir}/", file_name="mandelbrot_plot_zoomed")
+            
+            fig = self.plot_mandelbrot_set(iterations=self.max_iter * 2, **zoom_args)
+            self.save_figs([fig], save_dir=f"{self.output_dir}_extrapol/", file_name="mandelbrot_plot_zoomed")
+
+    @staticmethod
+    def save_figs(figs, save_dir, file_name="prediction"):
+        Path(save_dir).mkdir(parents=True, exist_ok=True)
+        for ii, fig in enumerate(figs):
+                # Save the plot with a unique name
+            fig.tight_layout()
+            fn = f"{save_dir}{file_name}_{ii}.png"
+            plt.savefig(fn)
+            wandb.save(fn)
+            #self.logger.log_image(key=f"{save_dir}Prediction Trajectory for $c = {c_complex.item():.2f}$", images=[fig], step=self.global_step)
+            plt.close(fig)
     
-    def plot_mandelbrot_set(self, real_min=-2.0, real_max=1.0, imag_min=-1.5, imag_max=1.5, resolution=500, iterations=20, save_path='mandelbrot_plot.png'):
+    def plot_mandelbrot_set(self, real_min=-2.0, real_max=1.0, imag_min=-1.5, imag_max=1.5, resolution=500, iterations=20):
         device = next(self.parameters()).device
         # Create grid of complex points c
         real = torch.linspace(real_min, real_max, resolution, device=device)
@@ -227,7 +234,7 @@ class MandelbrotNN(pl.LightningModule):
         magnitude = torch.abs(z_complex).reshape(resolution, resolution).cpu().numpy()
 
         # Plot the log of the magnitude to highlight differences
-        plt.figure(figsize=(8, 8))
+        fig = plt.figure(figsize=(8, 8))
         plt.imshow(np.where(((~np.isnan(magnitude.T)) & (magnitude.T < 2.0)), magnitude.T, 2.0), 
                 extent=[real_min, real_max, imag_min, imag_max], 
                 origin='lower', 
@@ -238,18 +245,14 @@ class MandelbrotNN(pl.LightningModule):
         plt.ylabel('Imag Axis')
         plt.title(f'Mandelbrot Set Visualization at t={iterations}')
 
-        # Save and close figure
-        plt.savefig(save_path, dpi=150)
-        wandb.save(save_path)
-        plt.close()
+        return fig
         
-    def plot_predictions(self, c_batch, max_iter, save_dir="predictions/"):
-        os.makedirs(save_dir, exist_ok=True)
-        
+    def plot_predictions(self, c_batch, max_iter):
         # compute unique c values
         c_batch = c_batch.unique(dim=0)[:8]
                 
-        for idx, c in enumerate(c_batch):
+        figs = []
+        for c in c_batch:
             c_complex = torch.view_as_complex(c)
             z_real = [0 + 0j]  # Ground truth values
             z_nn = [0 + 0j]    # NN predicted values
@@ -326,14 +329,10 @@ class MandelbrotNN(pl.LightningModule):
             # Add colorbar to the second subplot
             cbar = plt.colorbar(sm, ax=axs[1], orientation="vertical", pad=0.1)
             cbar.set_label("Time Step")
-
-            # Save the plot with a unique name
-            plt.tight_layout()
-            file_name = f"{save_dir}prediction_{idx}.png"
-            plt.savefig(file_name)
-            wandb.save(file_name)
-            #self.logger.log_image(key=f"{save_dir}Prediction Trajectory for $c = {c_complex.item():.2f}$", images=[fig], step=self.global_step)
-            plt.close(fig)
+            
+            figs.append(fig)
+            
+        return figs
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
