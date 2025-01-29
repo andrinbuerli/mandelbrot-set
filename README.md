@@ -27,8 +27,9 @@ Given $f$ we can infer the mandelbrot set with a single forward pass.
 
 | Original | Approximated|
 | -- | -- |
-| <img src="resources/mandelbrot_20.png" width="400"> | <img src="resources/mandelbrot_plot.png" width="300"><br>WIP!|  
-| <img src="resources/mandelbrot_zoomed_20.png" width="400"> | <img src="resources/mandelbrot_plot_zoomed.png" width="300"><br>WIP!|  
+| <img src="resources/mandelbrot_plot_5.png" width="300"> | <img src="resources/mandelbrot_nn_5.png" width="300">|  
+| <img src="resources/mandelbrot_plot_10.png" width="300"> | <img src="resources/mandelbrot_nn_10.png" width="300">|  
+| <img src="resources/mandelbrot_plot_20.png" width="300"> | <img src="resources/mandelbrot_nn_20.png" width="300">|  
 
 ## Setup
 
