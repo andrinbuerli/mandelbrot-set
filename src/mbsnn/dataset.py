@@ -4,21 +4,45 @@ from torch.utils.data import Dataset
 
 import numpy as np
 
+from mbsnn.utils import logscalemagnitude
+
 # Mandelbrot Dataset
 class MandelbrotDataset(Dataset):
-    def __init__(self, samples=1000, max_iter=20, max_magnitude=1e2, fix_c=False):
+    def __init__(
+        self, 
+        samples=1000,
+        max_iter=20, 
+        max_magnitude=1e2, 
+        fix_c=False,
+        biased_sampling=False,
+        real_range=(-2, 1),
+        imag_range=(-1.5, 1.5),
+        log_scale=False):
+        
         self.samples = samples
+        self.log_scale = log_scale
         self.max_iter = max_iter
         self.max_mag = max_magnitude
+        self.real_range = real_range
+        self.imag_range = imag_range
         if fix_c:
-            self.c = torch.complex(torch.rand(samples) * 3 - 2, torch.rand(samples) * 3 - 1.5)  # Complex c in [-2, 1] + [-1.5, 1.5]i
+            # sample from real and imaginary range
+            self.c = torch.complex(
+                torch.tensor(np.random.uniform(real_range[0], real_range[1], samples), dtype=torch.float32), 
+                torch.tensor(np.random.uniform(imag_range[0], imag_range[1], samples), dtype=torch.float)
+            )
         else:
             self.c = None
+            
+        self.biased_sampling = biased_sampling
 
     def generate_data(self, idx):
         while True:
             if self.c is None:
-                c = torch.complex(torch.rand(1) * 3 - 2, torch.rand(1) * 3 - 1.5)  # Complex c in [-2, 1] + [-1.5, 1.5]i
+                c = torch.complex(
+                    torch.tensor(np.random.uniform(self.real_range[0], self.real_range[1]), dtype=torch.float32), 
+                    torch.tensor(np.random.uniform(self.imag_range[0], self.imag_range[1]), dtype=torch.float)
+                ).reshape(1)
             else:
                 c = self.c[[idx]]
             #c = torch.tensor(-1.1 + 0.2j, dtype=torch.complex64).reshape(c.shape)
@@ -39,14 +63,17 @@ class MandelbrotDataset(Dataset):
             t_prob = t / self.max_iter
             
             repeat_prop = np.random.rand()
-            if repeat_prop < t_prob or self.c is not None:
+            if repeat_prop < t_prob or self.c is not None or not self.biased_sampling:
                 break
             
         if len(z_to_return) < (self.max_iter):
             z_to_return += [torch.tensor(torch.nan + torch.nan * 1j, dtype=torch.complex64)] * (self.max_iter - len(z_to_return))
             t_to_return += np.arange(len(t_to_return) + 1, self.max_iter + 1).tolist()
             
-        z_to_return = torch.view_as_real(torch.stack(z_to_return))
+        z_to_return = torch.stack(z_to_return)
+        if self.log_scale:
+            z_to_return = logscalemagnitude(z_to_return)
+        z_to_return = torch.view_as_real(z_to_return)
         c = torch.view_as_real(c).repeat(self.max_iter, 1)
         return (torch.tensor(t_to_return, dtype=torch.float32).unsqueeze(-1), c, z_to_return)
     
